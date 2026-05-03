@@ -17,8 +17,9 @@ Walking top-to-bottom through the page, the reader sees:
 5. **`hhea` + `hmtx`** — vertical metrics (ascender, descender, line gap) plus a per-glyph (advance width, left side bearing) array, with the trailing-glyph-share-the-last-advance optimisation.
 6. **`cmap`** — Unicode character → glyph index. Pick the format-4 subtable, walk its segment array, run the lookup formula for the character the user types.
 7. **`loca` + `glyf`** — read the per-glyph offset, parse the glyph header (`numberOfContours`, bbox), then run-length-decoded flag bytes, then x and y deltas. Build the contours, draw quadratic Béziers, mark on-curve, off-curve and the **implicit on-curve midpoints** between consecutive off-curves — the fact that surprises everyone the first time.
+8. **Sandbox** — type any string and watch all of the above happen for every character at once: cmap lookups, GSUB `liga` substitutions (so `office` becomes `o + ffi + c + e`), per-glyph advance widths, GPOS pair kerning (negative kern slabs are shown in red, positive in blue), and the resulting outlines laid out along a shared baseline. Composite glyphs (`i`, `j`, `é`, …) are recursively resolved and rendered properly.
 
-CFF outlines, variable-font axes, hinting, GSUB/GPOS layout, kerning — all explicitly out of scope and noted on the page where they would otherwise muddy the explanation.
+CFF outlines, variable-font axes, and hinting are still out of scope.
 
 ## Files
 
@@ -55,12 +56,13 @@ cmap subtables: 0/3 fmt=4, 3/1 fmt=4
 
 ## Open extensions
 
-Things that would round out the explanation but were deliberately left out of v1:
+Things that would round out the explanation but were deliberately left out:
 
-- Composite glyphs — currently shown by their bounding box only. Recursively decomposing them and showing the affine transforms would be a great addition.
 - The CFF / CFF2 outline path: a parallel walk through `CharStrings`, `subr`s and the type 2 stack-based byte code.
 - Variable fonts: `fvar` axes, `gvar` deltas, the math of interpolation. Probably its own page.
-- A full text-layout demo combining `cmap` &rarr; gid &rarr; outline + advanceWidth across a string of characters, into a rendered baseline of glyphs.
+- More GSUB lookup types (single/multiple/alternate/contextual/chaining substitutions) — the sandbox only runs ligature lookups today.
+- GPOS positioning beyond pair kerning (cursive attachment, mark-to-base, mark-to-mark) — relevant for Arabic/Devanagari but a much bigger lift.
+- Hinting bytecode — `prep`, `fpgm`, glyph-level `instructions`. Their effect at small ppem is dramatic, but disassembling Type-1 hinting would be a page on its own.
 
 ## License of the bundled font
 

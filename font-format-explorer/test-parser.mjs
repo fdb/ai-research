@@ -68,3 +68,28 @@ for (const ch of ['B','O','o','g','&']) {
   const g = p.parseGlyph(gid, loca);
   console.log(`  '${ch}' gid=${gid} kind=${g.kind} contours=${g.numberOfContours} pts=${g.points?g.points.length:0}`);
 }
+
+// ---- new: layout features ----
+const kern = p.parseKern();
+const gpos = p.parseGPOSKerning();
+const gsub = p.parseGSUBLigatures();
+console.log('kern table:', kern ? `version ${kern.version}, ${kern.subtables.length} subtables` : 'absent');
+console.log('GPOS kern:', gpos ? `${gpos.pairCount} explicit pairs, fmt1=${gpos.pairFormat1}, fmt2=${gpos.pairFormat2}` : 'absent');
+console.log('GSUB liga:', gsub ? `features=[${gsub.featuresFound}], ${gsub.ligatureCount} ligatures` : 'absent');
+
+if (gpos) {
+  for (const [a, b] of [['A','V'],['T','o'],['V','a'],['f','i'],['w','o']]) {
+    const ga = fmt4.lookup(a.codePointAt(0)).gid;
+    const gb = fmt4.lookup(b.codePointAt(0)).gid;
+    console.log(`  kern '${a}${b}' (gid ${ga},${gb}) =`, gpos.lookup(ga, gb));
+  }
+}
+if (gsub) {
+  for (const word of ['fi','fl','ffi','ff','cat','office']) {
+    const gids = [];
+    for (const ch of word) gids.push(fmt4.lookup(ch.codePointAt(0)).gid);
+    const out = gsub.apply(gids);
+    console.log(`  shape '${word}': ${gids.length} -> ${out.length} glyph(s)`,
+                out.map(o => o.ligaInfo ? `liga(${o.ligaInfo.comps.join('+')})=${o.gid}` : `${o.gid}`).join(' '));
+  }
+}

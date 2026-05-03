@@ -81,3 +81,80 @@ Update: shipping the TTF inline as base64 was bloating the HTML. Switched to fet
 - Performance: a full hex dump of an 80KB font is 5000 rows. Render only the visible window (virtualized) or chunks per-table.
 
 Decision: each "step" panel renders only the bytes of the current table being explained. A separate top-level "all bytes" view shows the file with rough table boundaries colored, but uses a virtualized canvas-style render.
+
+## 2026-05-03 — sandbox + scroll fix
+
+Two follow-up tasks landed today.
+
+### 1. Auto-scroll bug
+
+On initial load the page jumped down to the format-4 cmap section. Cause:
+`renderCmap` ends with `matchRow.scrollIntoView({ block: 'nearest' })`, where
+`matchRow` is the highlighted row in the segment table. Even with
+`block: 'nearest'`, `scrollIntoView` walks every scrollable ancestor, including
+the document — so when the cmap section is below the viewport on first render,
+the document scrolls down to put it in view.
+
+Fix: instead of `scrollIntoView`, manually adjust the inner wrapper's
+`scrollTop` so the matching row is visible only within the wrapper's
+overflow-auto container. The document is left alone.
+
+### 2. Sandbox: type a word, see the whole pipeline
+
+A new section at the bottom of the page that takes free-form text and shows:
+
+- character → codepoint
+- codepoint → glyph index via the existing format-4 cmap lookup
+- ligature substitution via GSUB `liga` (lookup type 4, format 1)
+- per-glyph advance width and lsb from `hmtx`
+- pair kerning via either GPOS `kern` (lookup type 2, formats 1 and 2) or the
+  legacy `kern` table (format 0)
+- glyph outlines (including composite resolution for letters like `i`, `j`, `é`)
+  laid out along the baseline with negative kerning shown as red bands and
+  positive kerning shown as blue bands
+
+Implementation notes:
+
+- **GSUB ligature parser.** Walks the feature list for `liga`/`clig`/`rlig`,
+  collects their lookup indices, then parses each LookupType-4 subtable
+  (LigatureSubstitutionFormat1 only — format isn't a thing for type 4 in the
+  spec but the substFormat field exists; we accept format 1). Sorts by
+  component count descending so longest matches win (e.g. `ffi` beats `ff`+`i`).
+  Indexed by first-glyph in a Map for O(1) prefix matching at apply-time.
+
+- **GPOS kerning parser.** OT kerning lives in GPOS LookupType 2 these days,
+  not in the legacy `kern` table — Space Grotesk and most modern fonts have
+  only the GPOS form. PairPosFormat1 stores explicit (left, right) pair
+  records; PairPosFormat2 stores a class×class table that compresses several
+  thousand pairs into a few hundred classes. Both are needed; modern fonts
+  often ship one of each in different subtables. ValueRecord is variable-sized
+  by valueFormat — only XAdvance (bit 0x0004) is relevant for horizontal
+  kerning, but we still need to skip XPlacement / YPlacement bytes preceding
+  it. Cached the explicit pairs into a flat `Map((left<<16)|right -> xAdvance)`
+  for fast lookup; fell back to scanning class-based subtables for misses.
+
+- **Composite glyph resolution.** Originally we punted on composite glyphs
+  (drew a dashed bbox). The sandbox needs them: `i`, `j`, `é`, `ñ`, etc. are
+  all composites in Space Grotesk. Added a recursive resolver that parses the
+  composite component header (flags, glyphIndex, dx/dy, optional 2x2 affine in
+  F2DOT14) and applies the transform to each component's contours. Depth cap of
+  8 to avoid pathological recursion.
+
+- **Layout math.** Pen advances by `advanceWidth - kernAdjustment` between
+  glyphs (the kern is applied *before* drawing the next glyph). The stage SVG
+  scales the design-unit pen position by `(stageHeight - 2*pad) / (ascender -
+  descender)` so the baseline lines up across glyphs of any size.
+
+- **UI feedback.** Toggling kerning off animates Σ to zero and grows total
+  advance by the sum of kerning values; toggling ligatures off de-merges
+  ligature rows back into individual character rows. Composite glyph is
+  rendered with the resolved contours, not just a bbox, so 'i' looks like 'i'.
+
+### Things I confirmed during testing
+
+- `affiliate` shapes to 7 glyphs with one `ffi` ligature — greedy match works.
+- `office` shapes to 4 glyphs (o, ffi, c, e); the `ffi` 3-component liga
+  beats the `ff` 2-component one, as required.
+- Space Grotesk has 9 ligatures total (ff, fi, fl, ffi, ffl, fb, ffb, fh, ffh)
+  and 2609 explicit GPOS kern pairs plus a class-based subtable.
+- The `AV`, `To`, `Va`, `T,` and `T o` pairs all kern as expected.

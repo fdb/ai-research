@@ -637,6 +637,134 @@ footer {
   font-size: 0.92rem;
 }
 
+/* ---------- sandbox ---------- */
+
+.sandbox {
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 4px;
+  padding: 1.4rem 1.5rem;
+  margin: 1.25rem 0;
+}
+
+.sandbox .sb-input-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.sandbox input.sb-text {
+  font-family: var(--mono);
+  font-size: 1.4rem;
+  padding: 0.45rem 0.7rem;
+  width: 24ch;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 500;
+}
+.sandbox input.sb-text:focus { outline: none; border-color: var(--accent); }
+
+.sandbox .sb-toggles {
+  display: flex;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.sandbox .sb-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+.sandbox .sb-toggles label.disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sandbox .sb-stage {
+  background: var(--paper);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.6rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+.sandbox .sb-stage svg { display: block; height: 220px; max-width: none; }
+
+.sandbox .sb-summary {
+  font-family: var(--mono);
+  font-size: 0.83rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.75rem;
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+}
+.sandbox .sb-summary strong { color: var(--ink); font-weight: 500; }
+
+.sb-pipeline {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  margin-top: 0.5rem;
+}
+.sb-pipeline th, .sb-pipeline td {
+  text-align: right;
+  padding: 0.28rem 0.55rem;
+  border-bottom: 1px solid var(--rule-soft);
+  white-space: nowrap;
+}
+.sb-pipeline th {
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 500;
+  font-family: var(--serif);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-3);
+}
+.sb-pipeline th:first-child, .sb-pipeline td:first-child { text-align: left; }
+.sb-pipeline td.glyph-cell {
+  font-family: var(--mono);
+  text-align: center;
+  width: 3.5rem;
+}
+.sb-pipeline td.glyph-cell svg {
+  height: 26px; width: 26px; display: inline-block;
+  vertical-align: middle;
+}
+.sb-pipeline td.is-liga { color: var(--accent); font-weight: 500; }
+.sb-pipeline tr.has-kern td.kern-val { color: var(--accent); font-weight: 500; }
+.sb-pipeline td.kern-val { color: var(--ink-faint); }
+.sb-pipeline tr.row-liga {
+  background: color-mix(in oklch, var(--accent-bg) 60%, transparent);
+}
+.sb-pipeline td.src-chars {
+  font-family: var(--mono);
+  color: var(--ink);
+  text-align: left;
+  font-size: 1rem;
+}
+.sb-pipeline td.src-chars .ch {
+  display: inline-block;
+  padding: 0 0.15rem;
+}
+.sb-pipeline td.src-chars .liga-bracket {
+  color: var(--accent);
+  font-size: 0.78rem;
+  margin-left: 0.4rem;
+}
+
+.sandbox .sb-note {
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+  margin-top: 0.75rem;
+  font-style: italic;
+}
+
 </style>
 </head>
 <body>
@@ -858,6 +986,32 @@ footer {
     <li>Draw the contours, treating off-curve pairs as quadratic Béziers with implicit on-curve midpoints.</li>
   </ol>
   <p>That's the whole rendering pipeline for a TrueType-flavored OpenType font, minus hinting (which fine-tunes pixel positions at small sizes), <span class="tag">kern</span>/<span class="tag">GPOS</span> (which adjusts spacing between glyph pairs), <span class="tag">GSUB</span> (which substitutes ligatures and contextual forms), and the variable font axes — each large enough for its own page.</p>
+</section>
+
+<!-- ===================== Sandbox ===================== -->
+
+<hr class="rule" />
+<section id="step-sandbox">
+  <span class="section-num">Sandbox &middot; type a word</span>
+  <h2>Watch the whole pipeline at once</h2>
+  <p>Type any string below. We'll run it through the steps you've just read about: <span class="tag">cmap</span> turns each character into a glyph index, <span class="tag">GSUB</span>'s <code>liga</code> feature merges sequences like <em>fi</em> or <em>ffl</em> into single ligature glyphs, <span class="tag">hmtx</span> contributes each glyph's advance width, and <span class="tag">GPOS</span>'s <code>kern</code> feature shifts adjacent glyphs that would otherwise look loose (think <em>AV</em>, <em>To</em>).</p>
+
+  <div class="sandbox" id="sandbox">
+    <div class="sb-input-row">
+      <input class="sb-text" id="sb-input" value="Typography fi" maxlength="48" autocomplete="off" spellcheck="false" />
+      <div class="sb-toggles">
+        <label id="sb-liga-label"><input type="checkbox" id="sb-liga" checked /> apply ligatures (<span class="tag">GSUB liga</span>)</label>
+        <label id="sb-kern-label"><input type="checkbox" id="sb-kern" checked /> apply kerning (<span class="tag">GPOS kern</span>)</label>
+        <label><input type="checkbox" id="sb-metrics" checked /> show advance + kern</label>
+      </div>
+    </div>
+
+    <div class="sb-summary" id="sb-summary"></div>
+    <div class="sb-stage" id="sb-stage"></div>
+
+    <table class="sb-pipeline" id="sb-pipeline"></table>
+    <p class="sb-note" id="sb-note"></p>
+  </div>
 </section>
 
 <footer>

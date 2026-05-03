@@ -304,9 +304,40 @@ class FontParser {
     const yMax = this.i16(start + 8);
 
     if (numberOfContours < 0) {
-      // composite — we don't fully resolve them, but flag for the UI
+      // composite glyph — list of (component, transform) records
+      const components = [];
+      let p = start + 10;
+      const F2DOT14 = (o) => this.i16(o) / 16384;
+      while (true) {
+        const flags = this.u16(p); p += 2;
+        const componentGlyphIndex = this.u16(p); p += 2;
+        const ARG_1_AND_2_ARE_WORDS = 0x0001;
+        const ARGS_ARE_XY_VALUES   = 0x0002;
+        const WE_HAVE_A_SCALE      = 0x0008;
+        const MORE_COMPONENTS      = 0x0020;
+        const WE_HAVE_AN_X_AND_Y_SCALE = 0x0040;
+        const WE_HAVE_A_TWO_BY_TWO = 0x0080;
+        let arg1, arg2;
+        if (flags & ARG_1_AND_2_ARE_WORDS) {
+          arg1 = this.i16(p); arg2 = this.i16(p + 2); p += 4;
+        } else {
+          arg1 = this.i8(p);  arg2 = this.i8(p + 1); p += 2;
+        }
+        let xx = 1, yx = 0, xy = 0, yy = 1, dx = 0, dy = 0;
+        if (flags & ARGS_ARE_XY_VALUES) { dx = arg1; dy = arg2; }
+        if (flags & WE_HAVE_A_SCALE) {
+          xx = yy = F2DOT14(p); p += 2;
+        } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE) {
+          xx = F2DOT14(p); yy = F2DOT14(p + 2); p += 4;
+        } else if (flags & WE_HAVE_A_TWO_BY_TWO) {
+          xx = F2DOT14(p); yx = F2DOT14(p + 2);
+          xy = F2DOT14(p + 4); yy = F2DOT14(p + 6); p += 8;
+        }
+        components.push({ glyphIndex: componentGlyphIndex, xx, yx, xy, yy, dx, dy, flags });
+        if (!(flags & MORE_COMPONENTS)) break;
+      }
       return { glyphIndex, kind: 'composite', numberOfContours, xMin, yMin, xMax, yMax,
-               glyphStart: start, glyphEnd: end };
+               components, glyphStart: start, glyphEnd: end };
     }
 
     let p = start + 10;
@@ -389,6 +420,386 @@ class FontParser {
       flagsStart, xCoordsStart, yCoordsStart,
       flags, points, contours,
       glyphStart: start, glyphEnd: end,
+    };
+  }
+
+  // ----- composite glyph resolver -----------------------------------
+  // Returns a flat list of contours (each a list of {x,y,onCurve}) with all
+  // component transforms applied. Recursion depth is capped at 8 to guard
+  // against pathological fonts.
+  resolveContours(glyphIndex, locaOffsets, depth = 0) {
+    if (depth > 8) return [];
+    const g = this.parseGlyph(glyphIndex, locaOffsets);
+    if (!g) return [];
+    if (g.kind === 'simple') {
+      return g.contours.map(c => c.map(p => ({ ...p })));
+    }
+    if (g.kind === 'composite' && g.components) {
+      const out = [];
+      for (const c of g.components) {
+        const sub = this.resolveContours(c.glyphIndex, locaOffsets, depth + 1);
+        for (const contour of sub) {
+          out.push(contour.map(p => ({
+            x: c.xx * p.x + c.xy * p.y + c.dx,
+            y: c.yx * p.x + c.yy * p.y + c.dy,
+            onCurve: p.onCurve,
+            index: p.index,
+          })));
+        }
+      }
+      return out;
+    }
+    return [];
+  }
+
+  // ----- kern (legacy OpenType kern table, format 0) -----------------
+  parseKern() {
+    const t = this.tables['kern']; if (!t) return null;
+    const o = t.offset;
+    const version = this.u16(o);
+    if (version !== 0) return null; // skip Apple-flavored kern
+    const nTables = this.u16(o + 2);
+    const subtables = [];
+    let p = o + 4;
+    for (let i = 0; i < nTables; i++) {
+      const subVersion = this.u16(p);
+      const subLength = this.u16(p + 2);
+      const coverage = this.u16(p + 4);
+      const format = (coverage >>> 8) & 0xFF;
+      const horizontal = !!(coverage & 0x01);
+      const isOverride = !!(coverage & 0x08);
+      if (format === 0 && horizontal) {
+        const nPairs = this.u16(p + 6);
+        const pairs = [];
+        let pp = p + 14;
+        for (let j = 0; j < nPairs; j++) {
+          pairs.push({
+            left: this.u16(pp),
+            right: this.u16(pp + 2),
+            value: this.i16(pp + 4),
+          });
+          pp += 6;
+        }
+        subtables.push({ format, horizontal, isOverride, pairs });
+      }
+      p += subLength;
+    }
+    const map = new Map();
+    for (const sub of subtables) {
+      for (const pair of sub.pairs) {
+        map.set((pair.left << 16) | pair.right, pair.value);
+      }
+    }
+    return {
+      _offset: o,
+      _source: 'kern',
+      version, nTables, subtables,
+      lookup: (left, right) => {
+        const v = map.get((left << 16) | right);
+        return v === undefined ? 0 : v;
+      },
+      pairCount: map.size,
+    };
+  }
+
+  // ----- shared OT layout helpers ------------------------------------
+  _parseCoverage(o) {
+    const format = this.u16(o);
+    const out = [];
+    if (format === 1) {
+      const glyphCount = this.u16(o + 2);
+      for (let i = 0; i < glyphCount; i++) out.push(this.u16(o + 4 + i * 2));
+    } else if (format === 2) {
+      const rangeCount = this.u16(o + 2);
+      for (let i = 0; i < rangeCount; i++) {
+        const r = o + 4 + i * 6;
+        const start = this.u16(r);
+        const end = this.u16(r + 2);
+        const startCoverageIndex = this.u16(r + 4);
+        for (let g = start; g <= end; g++) {
+          out[startCoverageIndex + (g - start)] = g;
+        }
+      }
+    }
+    return out;
+  }
+
+  // returns Map<glyphID, classNumber>; class 0 is the default.
+  _parseClassDef(o) {
+    const format = this.u16(o);
+    const map = new Map();
+    if (format === 1) {
+      const startGlyphID = this.u16(o + 2);
+      const glyphCount = this.u16(o + 4);
+      for (let i = 0; i < glyphCount; i++) {
+        map.set(startGlyphID + i, this.u16(o + 6 + i * 2));
+      }
+    } else if (format === 2) {
+      const classRangeCount = this.u16(o + 2);
+      for (let i = 0; i < classRangeCount; i++) {
+        const r = o + 4 + i * 6;
+        const start = this.u16(r);
+        const end = this.u16(r + 2);
+        const cls = this.u16(r + 4);
+        for (let g = start; g <= end; g++) map.set(g, cls);
+      }
+    }
+    return map;
+  }
+
+  _valueRecordSize(valueFormat) {
+    let n = 0;
+    for (let i = 0; i < 8; i++) if (valueFormat & (1 << i)) n++;
+    return n * 2;
+  }
+
+  // returns x-advance only (the only field we use for kerning)
+  _readXAdvance(o, valueFormat) {
+    let p = o;
+    if (valueFormat & 0x0001) p += 2;        // xPlacement
+    if (valueFormat & 0x0002) p += 2;        // yPlacement
+    if (valueFormat & 0x0004) return this.i16(p); // xAdvance
+    return 0;
+  }
+
+  // ----- GPOS — pair-adjustment kerning (LookupType 2) --------------
+  parseGPOSKerning() {
+    const t = this.tables['GPOS']; if (!t) return null;
+    const o = t.offset;
+    const major = this.u16(o);
+    if (major !== 1) return null;
+    const scriptListOff   = this.u16(o + 4);
+    const featureListOff  = this.u16(o + 6);
+    const lookupListOff   = this.u16(o + 8);
+
+    // 1) collect lookup indices for the 'kern' feature
+    const flo = o + featureListOff;
+    const featureCount = this.u16(flo);
+    const kernLookupIndices = new Set();
+    for (let i = 0; i < featureCount; i++) {
+      const r = flo + 2 + i * 6;
+      const tag = this.ascii(r, 4);
+      if (tag !== 'kern') continue;
+      const featureOff = this.u16(r + 4);
+      const fto = flo + featureOff;
+      const lookupIndexCount = this.u16(fto + 2);
+      for (let j = 0; j < lookupIndexCount; j++) {
+        kernLookupIndices.add(this.u16(fto + 4 + j * 2));
+      }
+    }
+    if (kernLookupIndices.size === 0) return null;
+
+    const llo = o + lookupListOff;
+    const lookupCount = this.u16(llo);
+
+    // The format-1 (pair set) data, per-pair.
+    const pairMap = new Map();
+    // Format-2 entries: {coverage:Set<gid>, classDef1:Map, classDef2:Map, class1Count, class2Count, table:int16[][]}
+    const classSubs = [];
+    let lookupCountKern = 0;
+    let format1Subs = 0;
+    let format2Subs = 0;
+
+    for (const li of kernLookupIndices) {
+      if (li >= lookupCount) continue;
+      const lookupOff = this.u16(llo + 2 + li * 2);
+      const lpo = llo + lookupOff;
+      const lookupType = this.u16(lpo);
+      if (lookupType !== 2) continue; // we handle pair adjustment only
+      lookupCountKern++;
+      const subTableCount = this.u16(lpo + 4);
+      for (let s = 0; s < subTableCount; s++) {
+        const sto = lpo + this.u16(lpo + 6 + s * 2);
+        const posFormat = this.u16(sto);
+        const coverageOff = this.u16(sto + 2);
+        const valueFormat1 = this.u16(sto + 4);
+        const valueFormat2 = this.u16(sto + 6);
+        const vrSize1 = this._valueRecordSize(valueFormat1);
+        const vrSize2 = this._valueRecordSize(valueFormat2);
+        const coverage = this._parseCoverage(sto + coverageOff);
+
+        if (posFormat === 1) {
+          format1Subs++;
+          const pairSetCount = this.u16(sto + 8);
+          for (let k = 0; k < pairSetCount; k++) {
+            const pairSetOff = this.u16(sto + 10 + k * 2);
+            const pso = sto + pairSetOff;
+            const pairValueCount = this.u16(pso);
+            const firstGid = coverage[k];
+            if (firstGid === undefined) continue;
+            const recSize = 2 + vrSize1 + vrSize2;
+            for (let r = 0; r < pairValueCount; r++) {
+              const rOff = pso + 2 + r * recSize;
+              const secondGid = this.u16(rOff);
+              const xAdv = this._readXAdvance(rOff + 2, valueFormat1);
+              if (xAdv !== 0) {
+                pairMap.set((firstGid << 16) | secondGid, xAdv);
+              }
+            }
+          }
+        } else if (posFormat === 2) {
+          format2Subs++;
+          const classDef1Off = this.u16(sto + 8);
+          const classDef2Off = this.u16(sto + 10);
+          const class1Count = this.u16(sto + 12);
+          const class2Count = this.u16(sto + 14);
+          const classDef1 = this._parseClassDef(sto + classDef1Off);
+          const classDef2 = this._parseClassDef(sto + classDef2Off);
+          const class1RecSize = class2Count * (vrSize1 + vrSize2);
+          const recOrigin = sto + 16;
+          // table[class1][class2] = xAdvance (class1's value1)
+          const table = new Array(class1Count);
+          for (let c1 = 0; c1 < class1Count; c1++) {
+            table[c1] = new Array(class2Count);
+            for (let c2 = 0; c2 < class2Count; c2++) {
+              const recOff = recOrigin + c1 * class1RecSize + c2 * (vrSize1 + vrSize2);
+              table[c1][c2] = this._readXAdvance(recOff, valueFormat1);
+            }
+          }
+          const coverageSet = new Set(coverage);
+          classSubs.push({ coverageSet, classDef1, classDef2, class1Count, class2Count, table });
+        }
+      }
+    }
+
+    return {
+      _offset: o,
+      _source: 'GPOS',
+      pairCount: pairMap.size,
+      pairFormat1: format1Subs,
+      pairFormat2: format2Subs,
+      kernLookupCount: lookupCountKern,
+      lookup: (left, right) => {
+        const direct = pairMap.get((left << 16) | right);
+        if (direct !== undefined) return direct;
+        for (const sub of classSubs) {
+          if (!sub.coverageSet.has(left)) continue;
+          const c1 = sub.classDef1.get(left) || 0;
+          const c2 = sub.classDef2.get(right) || 0;
+          if (c1 < sub.class1Count && c2 < sub.class2Count) {
+            const v = sub.table[c1][c2];
+            if (v) return v;
+          }
+        }
+        return 0;
+      },
+    };
+  }
+
+  // ----- GSUB — ligature substitution (LookupType 4) ---------------
+  parseGSUBLigatures() {
+    const t = this.tables['GSUB']; if (!t) return null;
+    const o = t.offset;
+    const major = this.u16(o);
+    if (major !== 1) return null;
+    const featureListOff = this.u16(o + 6);
+    const lookupListOff  = this.u16(o + 8);
+
+    // collect liga / clig / rlig lookup indices
+    const flo = o + featureListOff;
+    const featureCount = this.u16(flo);
+    const ligaLookupIndices = new Set();
+    const featuresFound = new Set();
+    for (let i = 0; i < featureCount; i++) {
+      const r = flo + 2 + i * 6;
+      const tag = this.ascii(r, 4);
+      if (tag !== 'liga' && tag !== 'clig' && tag !== 'rlig') continue;
+      featuresFound.add(tag);
+      const featureOff = this.u16(r + 4);
+      const fto = flo + featureOff;
+      const lookupIndexCount = this.u16(fto + 2);
+      for (let j = 0; j < lookupIndexCount; j++) {
+        ligaLookupIndices.add(this.u16(fto + 4 + j * 2));
+      }
+    }
+    if (ligaLookupIndices.size === 0) return null;
+
+    const llo = o + lookupListOff;
+    const lookupCount = this.u16(llo);
+    // table entries: { components: number[], ligature: number, source: tag }
+    const ligatures = [];
+
+    for (const li of ligaLookupIndices) {
+      if (li >= lookupCount) continue;
+      const lookupOff = this.u16(llo + 2 + li * 2);
+      const lpo = llo + lookupOff;
+      const lookupType = this.u16(lpo);
+      if (lookupType !== 4) continue;
+      const subTableCount = this.u16(lpo + 4);
+      for (let s = 0; s < subTableCount; s++) {
+        const sto = lpo + this.u16(lpo + 6 + s * 2);
+        const substFormat = this.u16(sto);
+        if (substFormat !== 1) continue;
+        const coverageOff = this.u16(sto + 2);
+        const ligatureSetCount = this.u16(sto + 4);
+        const coverage = this._parseCoverage(sto + coverageOff);
+        for (let k = 0; k < ligatureSetCount; k++) {
+          const ligSetOff = this.u16(sto + 6 + k * 2);
+          const lso = sto + ligSetOff;
+          const firstGid = coverage[k];
+          if (firstGid === undefined) continue;
+          const ligatureCount = this.u16(lso);
+          for (let l = 0; l < ligatureCount; l++) {
+            const ligOff = this.u16(lso + 2 + l * 2);
+            const lo = lso + ligOff;
+            const ligatureGlyph = this.u16(lo);
+            const componentCount = this.u16(lo + 2);
+            const components = [firstGid];
+            for (let m = 0; m < componentCount - 1; m++) {
+              components.push(this.u16(lo + 4 + m * 2));
+            }
+            ligatures.push({ components, ligature: ligatureGlyph });
+          }
+        }
+      }
+    }
+    // Longer matches first so e.g. "ffi" beats "fi".
+    ligatures.sort((a, b) => b.components.length - a.components.length);
+
+    // Index ligatures by first glyph for faster matching.
+    const byFirst = new Map();
+    for (const lig of ligatures) {
+      const key = lig.components[0];
+      if (!byFirst.has(key)) byFirst.set(key, []);
+      byFirst.get(key).push(lig);
+    }
+
+    return {
+      _offset: o,
+      featuresFound: [...featuresFound],
+      ligatureCount: ligatures.length,
+      ligatures,
+      apply: (gids) => {
+        // Each output: { gid, sources: number[], ligaInfo?: {tag, comps:gid[]} }
+        const out = [];
+        let i = 0;
+        while (i < gids.length) {
+          const candidates = byFirst.get(gids[i]);
+          let matched = null;
+          if (candidates) {
+            for (const lig of candidates) {
+              if (i + lig.components.length > gids.length) continue;
+              let ok = true;
+              for (let k = 1; k < lig.components.length; k++) {
+                if (gids[i + k] !== lig.components[k]) { ok = false; break; }
+              }
+              if (ok) { matched = lig; break; }
+            }
+          }
+          if (matched) {
+            out.push({
+              gid: matched.ligature,
+              sources: matched.components.map((_, k) => i + k),
+              ligaInfo: { comps: matched.components.slice() },
+            });
+            i += matched.components.length;
+          } else {
+            out.push({ gid: gids[i], sources: [i] });
+            i++;
+          }
+        }
+        return out;
+      },
     };
   }
 }
@@ -735,10 +1146,20 @@ function renderCmap(parser, cmap, fmt4, currentChar) {
   segHtml += '</tbody>';
   segT.innerHTML = segHtml;
 
-  // scroll to match
+  // Scroll the matched row into view *within its scrollable wrapper only*.
+  // Using element.scrollIntoView() would also scroll the document, which on
+  // initial load yanks the page down to the cmap section.
   if (r.segment >= 0) {
     const matchRow = segT.querySelector('tr.match');
-    if (matchRow) matchRow.scrollIntoView({ block: 'nearest' });
+    if (matchRow) {
+      const wrap = segT.parentElement;
+      const rowTop = matchRow.offsetTop;
+      const rowH = matchRow.offsetHeight;
+      const viewH = wrap.clientHeight;
+      if (rowTop < wrap.scrollTop || rowTop + rowH > wrap.scrollTop + viewH) {
+        wrap.scrollTop = rowTop - (viewH - rowH) / 2;
+      }
+    }
   }
 }
 
@@ -975,6 +1396,220 @@ function contourToSVGPath(contour, X, Y) {
 }
 
 // =====================================================================
+//  Sandbox — type a word, see the whole pipeline
+// =====================================================================
+//
+//   text -> codepoints -> gids (via cmap) -> ligatures (GSUB) ->
+//   per-glyph advance (hmtx) +/- kern (GPOS) -> SVG layout
+//
+// The pipeline table mirrors that flow row-by-row.
+
+function shapeText(parser, fmt4, gsubLig, gposKern, text, opts) {
+  // 1. characters -> input glyph IDs
+  const chars = Array.from(text);
+  const inputGids = chars.map(ch => fmt4 ? fmt4.lookup(ch.codePointAt(0)).gid : 0);
+
+  // 2. ligature substitution
+  let cluster;  // [{gid, sources:[charIdx...], ligaInfo?}]
+  if (opts.ligatures && gsubLig) {
+    cluster = gsubLig.apply(inputGids);
+  } else {
+    cluster = inputGids.map((g, i) => ({ gid: g, sources: [i] }));
+  }
+
+  // 3. per-glyph advance + kerning between adjacent glyphs
+  const items = [];
+  let xPen = 0;
+  for (let i = 0; i < cluster.length; i++) {
+    const c = cluster[i];
+    const m = parser._cachedHmtx[c.gid] || { advanceWidth: 0, lsb: 0 };
+    let kern = 0;
+    if (opts.kerning && gposKern && i > 0) {
+      kern = gposKern.lookup(cluster[i - 1].gid, c.gid);
+    }
+    xPen += kern;
+    items.push({
+      ...c,
+      chars: c.sources.map(s => chars[s]).join(''),
+      codepoints: c.sources.map(s => chars[s].codePointAt(0)),
+      advance: m.advanceWidth,
+      lsb: m.lsb,
+      kern,
+      x: xPen,
+    });
+    xPen += m.advanceWidth;
+  }
+
+  return { chars, inputGids, items, totalAdvance: xPen };
+}
+
+function renderSandbox(parser, head, hhea, hmtx, locaOffsets, fmt4, gsubLig, gposKern, text, opts) {
+  // Cache hmtx as a small map for shapeText (we already have the array)
+  parser._cachedHmtx = hmtx;
+
+  const stage = $('#sb-stage');
+  const pipeline = $('#sb-pipeline');
+  const summary = $('#sb-summary');
+  const note = $('#sb-note');
+
+  // Disable toggles whose features aren't present
+  const ligaToggle = $('#sb-liga');
+  const kernToggle = $('#sb-kern');
+  const ligaLabel = $('#sb-liga-label');
+  const kernLabel = $('#sb-kern-label');
+  if (!gsubLig) { ligaToggle.disabled = true; ligaLabel.classList.add('disabled'); }
+  else          { ligaToggle.disabled = false; ligaLabel.classList.remove('disabled'); }
+  if (!gposKern) { kernToggle.disabled = true; kernLabel.classList.add('disabled'); }
+  else           { kernToggle.disabled = false; kernLabel.classList.remove('disabled'); }
+
+  if (!fmt4 || !locaOffsets) {
+    stage.innerHTML = '<p class="muted" style="padding:0.6rem">Sandbox needs <span class="tag">cmap</span>, <span class="tag">loca</span> and <span class="tag">glyf</span> tables.</p>';
+    pipeline.innerHTML = '';
+    summary.innerHTML = '';
+    note.textContent = '';
+    return;
+  }
+
+  const shaped = shapeText(parser, fmt4, gsubLig, gposKern, text, opts);
+
+  // -------- Summary line --------
+  const ligaCount = shaped.items.filter(it => it.ligaInfo).length;
+  let kernCount = 0, kernSum = 0;
+  for (const it of shaped.items) {
+    if (it.kern !== 0) { kernCount++; kernSum += it.kern; }
+  }
+  summary.innerHTML = `
+    <span><strong>${shaped.chars.length}</strong> characters</span>
+    <span><strong>${shaped.items.length}</strong> glyphs</span>
+    <span><strong>${ligaCount}</strong> ligature${ligaCount===1?'':'s'} applied</span>
+    <span><strong>${kernCount}</strong> kern adjustment${kernCount===1?'':'s'} (Σ ${kernSum} units)</span>
+    <span><strong>${shaped.totalAdvance}</strong> total advance (font units)</span>`;
+
+  // -------- Stage SVG --------
+  // Map font-unit coords to SVG pixels. We pick a height H, scale = H / (ascender-descender),
+  // and a bit of horizontal padding.
+  const PAD = 24;
+  const H_target = 220;
+  const designH = (hhea.ascender - hhea.descender);
+  const sc = (H_target - PAD * 2) / designH;
+  const W = Math.max(420, Math.ceil(shaped.totalAdvance * sc) + PAD * 2);
+  const baselineY = PAD + hhea.ascender * sc;
+
+  // helpers to map glyph-local font-unit coords to SVG coords given an origin x
+  const scl = sc;
+  const parts = [];
+  parts.push(`<svg viewBox="0 0 ${W} ${H_target}" xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H_target}">`);
+
+  // Faint baseline + x-height + cap-height guides
+  parts.push(`<line x1="${PAD}" y1="${baselineY}" x2="${W - PAD/2}" y2="${baselineY}" stroke="var(--ink-faint)" stroke-width="0.6"/>`);
+  parts.push(`<text x="${PAD}" y="${baselineY + 12}" font-family="var(--mono)" font-size="9" fill="var(--ink-faint)">baseline</text>`);
+  // ascender / descender
+  parts.push(`<line x1="${PAD}" y1="${baselineY - hhea.ascender * scl}" x2="${W - PAD/2}" y2="${baselineY - hhea.ascender * scl}" stroke="var(--ink-faint)" stroke-width="0.4" stroke-dasharray="3 3"/>`);
+  parts.push(`<line x1="${PAD}" y1="${baselineY - hhea.descender * scl}" x2="${W - PAD/2}" y2="${baselineY - hhea.descender * scl}" stroke="var(--ink-faint)" stroke-width="0.4" stroke-dasharray="3 3"/>`);
+
+  // Each glyph: outline + thin advance markers
+  for (const it of shaped.items) {
+    const originX = PAD + it.x * scl;
+    const g = parser.parseGlyph(it.gid, locaOffsets);
+
+    // origin tick (where glyph starts)
+    if (opts.metrics) {
+      parts.push(`<line x1="${originX}" y1="${baselineY - hhea.ascender * scl}" x2="${originX}" y2="${baselineY - hhea.descender * scl}" stroke="var(--rule)" stroke-width="0.5"/>`);
+    }
+    // kerning highlight: shaded vertical slab between the previous glyph's advance end and this glyph's origin
+    if (opts.metrics && it.kern !== 0) {
+      const x1 = originX - it.kern * scl;
+      const x0 = Math.min(originX, x1);
+      const w  = Math.abs(it.kern * scl);
+      parts.push(`<rect x="${x0}" y="${baselineY - hhea.ascender * scl}" width="${w}" height="${(hhea.ascender - hhea.descender) * scl}" fill="${it.kern < 0 ? 'oklch(70% 0.10 28 / 0.20)' : 'oklch(70% 0.10 240 / 0.20)'}"/>`);
+    }
+
+    // path — resolve composites recursively so 'i', 'é' etc. render properly
+    const flatContours = (g.kind === 'simple')
+      ? g.contours
+      : (g.kind === 'composite' ? parser.resolveContours(it.gid, locaOffsets) : []);
+    if (flatContours.length > 0) {
+      const X = (x) => originX + x * scl;
+      const Y = (y) => baselineY - y * scl;
+      let d = '';
+      for (const ct of flatContours) d += contourToSVGPath(ct, X, Y);
+      const fill = it.ligaInfo ? 'var(--accent)' : 'var(--ink)';
+      parts.push(`<path d="${d}" fill="${fill}" fill-opacity="${it.ligaInfo ? 0.85 : 0.9}" fill-rule="nonzero"/>`);
+    }
+  }
+
+  parts.push('</svg>');
+  stage.innerHTML = parts.join('');
+
+  // -------- Pipeline table --------
+  let html = `<thead><tr>
+    <th>#</th><th>chars</th><th>codepoint</th><th>glyph</th><th>gid</th>
+    <th>advanceWidth</th><th>lsb</th><th>kern</th><th>x position</th><th>note</th>
+  </tr></thead><tbody>`;
+  for (let i = 0; i < shaped.items.length; i++) {
+    const it = shaped.items[i];
+    const rowCls = it.ligaInfo ? ' class="row-liga"' : '';
+    const cps = it.codepoints.map(c => `U+${c.toString(16).toUpperCase().padStart(4, '0')}`).join(' ');
+    const charsHtml = `<span class="ch">${escapeHtml(it.chars)}</span>${it.ligaInfo ? ` <span class="liga-bracket">[${it.ligaInfo.comps.join('+')}]</span>` : ''}`;
+    // small thumbnail
+    const thumb = renderGlyphThumbSvg(parser, head, hhea, locaOffsets, it.gid, 28);
+    const kernCls = it.kern !== 0 ? 'kern-val' : 'kern-val';
+    const kernText = it.kern !== 0 ? (it.kern > 0 ? '+' + it.kern : it.kern) : '0';
+    const note = it.ligaInfo ? `liga ← ${it.ligaInfo.comps.join(', ')}` : '';
+    html += `<tr${rowCls}${it.kern !== 0 ? ' data-has-kern="1"' : ''}>
+      <td>${i}</td>
+      <td class="src-chars">${charsHtml}</td>
+      <td>${cps}</td>
+      <td class="glyph-cell">${thumb}</td>
+      <td${it.ligaInfo ? ' class="is-liga"' : ''}>${it.gid}</td>
+      <td>${it.advance}</td>
+      <td>${it.lsb}</td>
+      <td class="${kernCls}">${kernText}</td>
+      <td>${it.x}</td>
+      <td style="text-align:left;color:var(--ink-soft)">${note}</td>
+    </tr>`;
+  }
+  html += '</tbody>';
+  pipeline.innerHTML = html;
+
+  // Footnote about which features are active / present
+  const noteParts = [];
+  if (gsubLig) noteParts.push(`GSUB <code>liga</code>: ${gsubLig.ligatureCount} ligature${gsubLig.ligatureCount===1?'':'s'} defined`);
+  else noteParts.push(`No GSUB ligatures in this font`);
+  if (gposKern) noteParts.push(`GPOS <code>kern</code>: ${gposKern.pairCount} explicit pairs + ${gposKern.pairFormat2 > 0 ? 'class-based subtable' : 'no class-based table'}`);
+  else if (parser.hasTable('kern')) noteParts.push(`Legacy <code>kern</code> table present`);
+  else noteParts.push(`No kerning data in this font`);
+  note.innerHTML = noteParts.join(' &middot; ');
+}
+
+// Tiny inline SVG showing one glyph at a small fixed size (for the pipeline table).
+function renderGlyphThumbSvg(parser, head, hhea, locaOffsets, gid, size) {
+  if (!locaOffsets) return '';
+  const g = parser.parseGlyph(gid, locaOffsets);
+  if (!g) return '';
+  // Use the font's full ascender/descender range so all thumbnails share a baseline.
+  const top = hhea.ascender, bot = hhea.descender;
+  const xMin = g.xMin ?? 0, xMax = g.xMax ?? 0;
+  const fw = Math.max(xMax - xMin, 1);
+  const fh = top - bot;
+  const sc = Math.min(size / fw, size / fh) * 0.85;
+  const cx = (size - fw * sc) / 2 - xMin * sc;
+  const cy = size * 0.86;
+  const X = (x) => cx + x * sc;
+  const Y = (y) => cy - y * sc;
+  const flat = (g.kind === 'simple') ? g.contours : parser.resolveContours(gid, locaOffsets);
+  let inner = '';
+  if (flat.length > 0) {
+    let d = '';
+    for (const ct of flat) d += contourToSVGPath(ct, X, Y);
+    inner = `<path d="${d}" fill="var(--ink)" fill-rule="nonzero"/>`;
+  } else {
+    inner = `<text x="${size/2}" y="${size/2+4}" text-anchor="middle" font-family="var(--mono)" font-size="9" fill="var(--ink-faint)">·</text>`;
+  }
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${inner}</svg>`;
+}
+
+// =====================================================================
 //  Glyph minigrid — small previews for navigation
 // =====================================================================
 
@@ -1033,6 +1668,9 @@ const App = {
   cmap: null,
   fmt4: null,
   loca: null,
+  gsubLig: null,
+  gposKern: null,
+  kern: null,
   filename: '',
   filesize: 0,
 
@@ -1040,6 +1678,7 @@ const App = {
   currentChar: 'A',
   currentGid: -1,
   glyphOpts: { showPoints: true, showImplicit: true, showMetrics: true, showNumbers: false },
+  sandbox: { text: 'Typography fi', ligatures: true, kerning: true, metrics: true },
 
   loadBuffer(buffer, filename) {
     this.filename = filename;
@@ -1081,6 +1720,12 @@ const App = {
     if (this.parser.hasTable('loca') && this.parser.hasTable('glyf')) {
       this.loca = this.parser.parseLoca(this.maxp.numGlyphs, this.head.indexToLocFormat);
     }
+    // Optional layout tables — for the sandbox
+    this.gsubLig = this.parser.parseGSUBLigatures();
+    this.gposKern = this.parser.parseGPOSKerning();
+    this.kern = this.parser.parseKern();
+    // If GPOS doesn't exist but legacy kern does, route the sandbox through it.
+    if (!this.gposKern && this.kern) this.gposKern = this.kern;
 
     // Initial glyph: 'g' (lots of curves), then 'a', then any non-empty glyph
     this.currentGid = 1;
@@ -1113,6 +1758,13 @@ const App = {
       renderCmap(this.parser, this.cmap, this.fmt4, this.currentChar);
     }
     this.renderGlyfSection();
+    this.renderSandboxSection();
+  },
+
+  renderSandboxSection() {
+    renderSandbox(this.parser, this.head, this.hhea, this.hmtx, this.loca,
+                  this.fmt4, this.gsubLig, this.gposKern,
+                  this.sandbox.text, this.sandbox);
   },
 
   renderGlyfSection() {
@@ -1239,6 +1891,21 @@ async function boot() {
   $('#opt-implicit').addEventListener('change', (e) => { App.glyphOpts.showImplicit = e.target.checked; App.renderGlyfSection(); });
   $('#opt-metrics').addEventListener('change', (e) => { App.glyphOpts.showMetrics = e.target.checked; App.renderGlyfSection(); });
   $('#opt-numbers').addEventListener('change', (e) => { App.glyphOpts.showNumbers = e.target.checked; App.renderGlyfSection(); });
+
+  // Sandbox inputs
+  $('#sb-input').addEventListener('input', (e) => {
+    App.sandbox.text = e.target.value;
+    App.renderSandboxSection();
+  });
+  $('#sb-liga').addEventListener('change', (e) => {
+    App.sandbox.ligatures = e.target.checked; App.renderSandboxSection();
+  });
+  $('#sb-kern').addEventListener('change', (e) => {
+    App.sandbox.kerning = e.target.checked; App.renderSandboxSection();
+  });
+  $('#sb-metrics').addEventListener('change', (e) => {
+    App.sandbox.metrics = e.target.checked; App.renderSandboxSection();
+  });
 
   // Try to load the bundled font
   const def = await tryFetchDefaultFont();

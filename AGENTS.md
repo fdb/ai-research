@@ -4,6 +4,8 @@ Create a notes.md file in that folder and append notes to it as you work, tracki
 
 Build a README.md report at the end of the investigation.
 
+For every experiment, we are trying to make an **explorable explanation** — a single self-contained interactive HTML page that lets the reader produce the phenomenon themselves rather than just read about it. See [EXPLORABLE_EXPLANATIONS.md](EXPLORABLE_EXPLANATIONS.md) for what that means in practice and when a different shape is appropriate. All experiments share a common visual system defined in [STYLE.md](STYLE.md) — read it before designing the page.
+
 Your final commit should include just that folder and selected items from its contents:
 
 - The notes.md and README.md files

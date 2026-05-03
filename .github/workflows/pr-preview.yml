@@ -1,0 +1,100 @@
+name: PR preview
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='_site' \
+            ./ _site/
+
+      - name: Publish to pr-${{ env.PR_NUMBER }}/
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: _site
+          branch: gh-pages
+          target-folder: pr-${{ env.PR_NUMBER }}
+          clean: true
+          commit-message: "Preview for PR #${{ env.PR_NUMBER }} (${{ github.event.pull_request.head.sha }})"
+
+      - name: Build preview URL
+        id: url
+        run: |
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          echo "value=https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}/pr-${PR_NUMBER}/" >> "$GITHUB_OUTPUT"
+
+      - name: Comment preview URL on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            ### Preview deployed
+
+            **URL:** ${{ steps.url.outputs.value }}
+            **Commit:** `${{ github.event.pull_request.head.sha }}`
+
+            <sub>Updated on every push. Removed when this PR closes.</sub>
+
+  cleanup:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Remove preview folder
+        id: remove
+        run: |
+          if [ ! -d "pr-${PR_NUMBER}" ]; then
+            echo "removed=false" >> "$GITHUB_OUTPUT"
+            echo "No preview folder for PR #${PR_NUMBER}; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -rf "pr-${PR_NUMBER}"
+          git commit -m "Remove preview for PR #${PR_NUMBER}"
+          git push origin gh-pages
+          echo "removed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update PR comment
+        if: steps.remove.outputs.removed == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            ### Preview removed
+
+            The preview directory for this PR has been deleted from `gh-pages`.

@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Inside an OpenType font &middot; an explorable explanation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Tufte-ish palette in OKLCH */
+  --paper:        oklch(97.2% 0.012 85);
+  --paper-2:      oklch(95.5% 0.014 85);
+  --paper-3:      oklch(93.0% 0.016 85);
+  --ink:          oklch(22% 0.02 60);
+  --ink-soft:     oklch(42% 0.018 60);
+  --ink-faint:    oklch(58% 0.014 65);
+  --rule:         oklch(82% 0.012 70);
+  --rule-soft:    oklch(88% 0.010 75);
+  --accent:       oklch(54% 0.18 28);
+  --accent-2:     oklch(46% 0.16 25);
+  --accent-soft:  oklch(89% 0.07 28);
+  --accent-bg:    oklch(94% 0.04 28);
+
+  /* Highlight families for hex bytes */
+  --hl-blue:      oklch(70% 0.10 240);
+  --hl-blue-bg:   oklch(92% 0.04 240);
+  --hl-green:     oklch(65% 0.10 150);
+  --hl-green-bg:  oklch(92% 0.04 150);
+  --hl-purple:    oklch(60% 0.13 310);
+  --hl-purple-bg: oklch(92% 0.04 310);
+  --hl-amber:     oklch(70% 0.13 75);
+  --hl-amber-bg:  oklch(93% 0.06 75);
+  --hl-teal:      oklch(65% 0.10 200);
+  --hl-teal-bg:   oklch(92% 0.04 200);
+
+  --serif: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 4rem 2rem 6rem;
+}
+
+@media (max-width: 720px) {
+  main { padding: 2.5rem 1.25rem 4rem; }
+}
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in oklch, var(--accent) 35%, transparent); }
+a:hover { color: var(--accent-2); border-bottom-color: var(--accent-2); }
+
+h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.01em; color: var(--ink); }
+h1 { font-size: 2.7rem; line-height: 1.1; margin: 0 0 0.4em; font-weight: 600; letter-spacing: -0.02em; }
+h2 { font-size: 1.55rem; line-height: 1.25; margin: 4rem 0 0.6rem; font-weight: 500; }
+h3 { font-size: 1.1rem; line-height: 1.3; margin: 2rem 0 0.5rem; font-weight: 500; }
+h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); margin: 1.5rem 0 0.5rem; font-weight: 600; }
+p { margin: 0 0 1em; max-width: 64ch; }
+
+.lede { font-size: 1.15rem; line-height: 1.5; color: var(--ink-soft); max-width: 60ch; }
+
+.byline { font-size: 0.9rem; color: var(--ink-faint); margin-top: 0.5rem; font-style: italic; }
+
+.muted { color: var(--ink-soft); }
+.faint { color: var(--ink-faint); }
+
+hr.rule {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 3.5rem 0 1.5rem;
+}
+
+code, kbd, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+.tag {
+  font-family: var(--mono);
+  font-weight: 500;
+  background: var(--paper-3);
+  border: 1px solid var(--rule-soft);
+  padding: 0.05rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.85em;
+  color: var(--ink);
+}
+
+.kw { color: var(--accent); font-weight: 500; }
+
+.section-num {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+/* ---------- Drop zone / file loader ---------- */
+
+.font-loader {
+  margin: 2.5rem 0;
+  padding: 1.5rem 1.75rem;
+  background: var(--paper-2);
+  border: 1px dashed var(--rule);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.font-loader.drag {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  border-style: solid;
+}
+.font-loader .label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.font-loader .name {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+.font-loader .meta {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+}
+.font-loader button {
+  font-family: var(--serif);
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  padding: 0.45rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.01em;
+}
+.font-loader button:hover { background: var(--accent); }
+.font-loader .hint { font-size: 0.85rem; color: var(--ink-faint); }
+
+/* ---------- Hex view ---------- */
+
+.hex-wrap {
+  margin: 1.25rem 0;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.hex-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--paper-3);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+.hex-head .right { margin-left: auto; }
+.hex-head .pill {
+  background: var(--paper);
+  border: 1px solid var(--rule-soft);
+  border-radius: 99px;
+  padding: 0.05rem 0.55rem;
+  color: var(--ink-soft);
+}
+
+.hex-view {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 0.55rem 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  max-height: 380px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.hex-row {
+  display: grid;
+  grid-template-columns: 7ch  calc(8 * 2.55ch + 1.4ch + 8 * 2.55ch)  17ch;
+  gap: 1.2rem;
+  align-items: center;
+}
+.hex-row .off {
+  color: var(--ink-faint);
+  user-select: none;
+  font-weight: 500;
+}
+.hex-row .bytes { display: inline-flex; gap: 0; flex-wrap: nowrap; }
+.hex-row .bytes::before, .hex-row .bytes::after { content: ''; }
+
+.hb {
+  display: inline-block;
+  width: 2.55ch;
+  text-align: center;
+  padding: 0.05rem 0;
+  color: var(--ink);
+  border-radius: 2px;
+  position: relative;
+  cursor: default;
+  transition: background-color 0.08s;
+}
+.hb.empty { background: transparent; color: transparent; }
+.hex-row .bytes .gap-mid {
+  display: inline-block;
+  width: 1.4ch;
+}
+.hex-row .ascii {
+  display: inline-flex;
+  font-family: var(--mono);
+  color: var(--ink-soft);
+  letter-spacing: 0;
+}
+.ab {
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+  border-radius: 2px;
+}
+.ab.empty { color: transparent; }
+
+/* highlight palette */
+.hb.hl-blue, .ab.hl-blue   { background: var(--hl-blue-bg); }
+.hb.hl-green, .ab.hl-green { background: var(--hl-green-bg); }
+.hb.hl-purple, .ab.hl-purple { background: var(--hl-purple-bg); }
+.hb.hl-amber, .ab.hl-amber { background: var(--hl-amber-bg); }
+.hb.hl-teal, .ab.hl-teal   { background: var(--hl-teal-bg); }
+.hb.hl-red, .ab.hl-red     { background: var(--accent-bg); color: var(--accent-2); }
+
+.hb.lead-blue   { box-shadow: inset 0 -2px 0 var(--hl-blue); }
+.hb.lead-green  { box-shadow: inset 0 -2px 0 var(--hl-green); }
+.hb.lead-purple { box-shadow: inset 0 -2px 0 var(--hl-purple); }
+.hb.lead-amber  { box-shadow: inset 0 -2px 0 var(--hl-amber); }
+.hb.lead-teal   { box-shadow: inset 0 -2px 0 var(--hl-teal); }
+.hb.lead-red    { box-shadow: inset 0 -2px 0 var(--accent); }
+
+.hb:hover { outline: 1px solid var(--ink); outline-offset: -1px; z-index: 1; }
+.hb.focused {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  z-index: 2;
+}
+
+/* legend chips next to hex view */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  font-size: 0.85rem;
+  margin: 0.7rem 0 0.25rem;
+}
+.legend .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  user-select: none;
+  padding: 0.1rem 0.5rem 0.1rem 0.4rem;
+  border-radius: 3px;
+  transition: background-color 0.1s;
+}
+.legend .chip:hover { background: var(--paper-3); }
+.legend .chip.active { background: var(--paper-3); box-shadow: inset 0 0 0 1px var(--rule); }
+.legend .swatch {
+  display: inline-block;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 2px;
+  border: 1px solid color-mix(in oklch, currentColor 30%, transparent);
+}
+.swatch.hl-blue { background: var(--hl-blue-bg); border-color: var(--hl-blue); }
+.swatch.hl-green { background: var(--hl-green-bg); border-color: var(--hl-green); }
+.swatch.hl-purple { background: var(--hl-purple-bg); border-color: var(--hl-purple); }
+.swatch.hl-amber { background: var(--hl-amber-bg); border-color: var(--hl-amber); }
+.swatch.hl-teal { background: var(--hl-teal-bg); border-color: var(--hl-teal); }
+.swatch.hl-red { background: var(--accent-bg); border-color: var(--accent); }
+
+/* ---------- field tables ---------- */
+
+.fields {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  margin: 1rem 0;
+}
+.fields th, .fields td {
+  text-align: left;
+  padding: 0.4rem 0.7rem 0.4rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+.fields th {
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--rule);
+}
+.fields td.t-name { font-family: var(--mono); font-size: 0.88rem; color: var(--ink); width: 22%; }
+.fields td.t-type { font-family: var(--mono); font-size: 0.82rem; color: var(--ink-faint); width: 12%; }
+.fields td.t-val  { font-family: var(--mono); font-size: 0.88rem; color: var(--accent); font-weight: 500; width: 24%; }
+.fields td.t-note { color: var(--ink-soft); font-size: 0.92rem; }
+.fields tr.hover { background: var(--paper-3); cursor: default; }
+.fields tr[data-hl] { cursor: pointer; }
+.fields tr[data-hl]:hover { background: color-mix(in oklch, var(--paper-3) 70%, var(--accent-bg)); }
+
+.fields .swatch-inline {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: 0.05em;
+}
+.swatch-inline.hl-blue { background: var(--hl-blue); }
+.swatch-inline.hl-green { background: var(--hl-green); }
+.swatch-inline.hl-purple { background: var(--hl-purple); }
+.swatch-inline.hl-amber { background: var(--hl-amber); }
+.swatch-inline.hl-teal { background: var(--hl-teal); }
+.swatch-inline.hl-red { background: var(--accent); }
+
+/* ---------- table directory list ---------- */
+
+.dir-list {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+}
+.dir-list li {
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.35rem 0.65rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  transition: all 0.1s;
+  cursor: default;
+}
+.dir-list li.known { border-color: color-mix(in oklch, var(--accent) 25%, var(--rule-soft)); }
+.dir-list li.known .tag-name { color: var(--accent); font-weight: 500; }
+.dir-list li .tag-name { font-weight: 500; }
+.dir-list li .size { color: var(--ink-faint); font-size: 0.82rem; }
+
+/* ---------- glyph viewer ---------- */
+
+.glyph-explorer {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 1.5rem;
+  margin: 1.5rem 0;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .glyph-explorer { grid-template-columns: 1fr; }
+}
+
+.glyph-canvas-wrap {
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 4px;
+  padding: 1rem;
+  position: relative;
+}
+.glyph-canvas-wrap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.glyph-controls {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 0.85rem;
+}
+.glyph-controls label {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.glyph-controls input[type="text"], .glyph-controls input[type="number"] {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 0.3rem 0.5rem;
+  border-radius: 3px;
+  width: 5ch;
+  text-align: center;
+}
+.glyph-controls input.wide { width: 16ch; text-align: left; }
+.glyph-controls input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.glyph-controls .opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  user-select: none;
+}
+.glyph-controls .nav {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.glyph-controls .nav button {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  background: var(--paper);
+  border: none;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+  color: var(--ink);
+  border-right: 1px solid var(--rule);
+}
+.glyph-controls .nav button:last-child { border-right: none; }
+.glyph-controls .nav button:hover { background: var(--paper-3); color: var(--accent); }
+
+.glyph-side {
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+}
+.glyph-side h4 { margin-top: 0; }
+.glyph-side .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0;
+  border-bottom: 1px dotted var(--rule-soft);
+  font-family: var(--mono);
+  font-size: 0.86rem;
+}
+.glyph-side .row .k { color: var(--ink-soft); }
+.glyph-side .row .v { color: var(--ink); font-weight: 500; }
+
+.glyph-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+}
+.glyph-mini-grid .cell {
+  aspect-ratio: 1;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.1s;
+}
+.glyph-mini-grid .cell:hover { border-color: var(--accent); background: var(--accent-bg); }
+.glyph-mini-grid .cell.active { border-color: var(--accent); background: var(--accent-bg); }
+.glyph-mini-grid .cell svg { width: 80%; height: 80%; }
+.glyph-mini-grid .cell .gid {
+  position: absolute;
+  bottom: 1px; right: 3px;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--ink-faint);
+}
+
+/* ---------- character lookup ---------- */
+.cmap-demo {
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 4px;
+  padding: 1.2rem 1.4rem;
+  margin: 1.25rem 0;
+}
+.cmap-demo .row1 {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+}
+.cmap-demo input.char-input {
+  font-family: var(--mono);
+  font-size: 1.6rem;
+  padding: 0.4rem 0.7rem;
+  text-align: center;
+  width: 4ch;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 500;
+}
+.cmap-demo .arrow { color: var(--ink-faint); font-size: 1.4rem; }
+.cmap-demo .result {
+  font-family: var(--mono);
+  font-size: 1.05rem;
+}
+.cmap-demo .result .label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  margin-bottom: 0.15rem;
+}
+.cmap-demo .result .value { color: var(--accent); font-weight: 500; font-size: 1.15rem; }
+.cmap-demo .seg-trace {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  margin-top: 1rem;
+  color: var(--ink-soft);
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--rule-soft);
+}
+.cmap-demo .seg-trace .step { padding: 0.15rem 0; }
+.cmap-demo .seg-trace .step .arrow-in { color: var(--accent); margin-right: 0.4rem; }
+
+/* ---------- aside / margin notes ---------- */
+.note {
+  background: var(--paper-2);
+  border-left: 3px solid var(--accent);
+  padding: 0.7rem 1rem;
+  margin: 1rem 0;
+  font-size: 0.93rem;
+  color: var(--ink-soft);
+  border-radius: 0 3px 3px 0;
+}
+.note strong { color: var(--ink); font-weight: 500; }
+
+.figure-caption {
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+  font-style: italic;
+  margin-top: 0.4rem;
+  max-width: 60ch;
+}
+
+/* ---------- footer ---------- */
+footer {
+  margin-top: 6rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.88rem;
+  color: var(--ink-faint);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+/* ---------- segments table for cmap ---------- */
+.seg-table {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+.seg-table th, .seg-table td {
+  padding: 0.25rem 0.6rem;
+  text-align: right;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.seg-table th {
+  text-align: right;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 500;
+  font-family: var(--serif);
+  border-bottom: 1px solid var(--rule);
+}
+.seg-table th:first-child, .seg-table td:first-child { text-align: left; }
+.seg-table tr.match { background: var(--accent-bg); }
+.seg-table tr.match td { color: var(--accent); font-weight: 500; }
+
+.bbox-display {
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  padding: 1rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+}
+.bbox-display svg { display: block; width: 100%; height: auto; }
+
+.metric-line { stroke-dasharray: 3 3; }
+
+.error-box {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  color: var(--accent-2);
+  font-size: 0.92rem;
+}
+
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <span class="section-num">an explorable explanation</span>
+  <h1>Inside an OpenType font</h1>
+  <p class="lede">A <span class="kw">font file</span> is a collection of binary tables, organised so a layout engine can find a glyph from a character, measure its width, and trace its outline. This page parses one in front of you — every step, every byte.</p>
+  <p class="byline">The font you see below is <em>Space Grotesk</em>, by Florian Karsten. Drop in a <span class="mono">.ttf</span> or <span class="mono">.otf</span> of your own to take this tour through any font you like.</p>
+</header>
+
+<div class="font-loader" id="font-loader">
+  <div>
+    <div class="label">Currently loaded</div>
+    <div class="name" id="loader-name">&hellip;</div>
+    <div class="meta" id="loader-meta">&hellip;</div>
+  </div>
+  <div style="flex: 1 1 8rem"></div>
+  <div class="hint">Drop a font file anywhere on the page,<br/>or</div>
+  <button id="loader-btn">Choose a file&hellip;</button>
+  <input type="file" id="loader-input" accept=".ttf,.otf,font/ttf,font/otf" hidden />
+</div>
+
+<div id="err-box"></div>
+
+<!-- ===================== STEP 1: The file ===================== -->
+
+<hr class="rule" />
+<section id="step-file">
+  <span class="section-num">Step 1 &middot; The container</span>
+  <h2>A font is a flat binary file</h2>
+  <p>OpenType inherits its container format from Apple's TrueType, which is older than the web. The file has no compression, no versioning at the top, and no metadata block — just a four-byte tag, a count, and a series of fixed-width records pointing into the file. Everything else is found by following offsets.</p>
+
+  <p>Here are the first 64 bytes of the file, exactly as they sit on disk. The very first four bytes — the <span class="tag">sfnt version</span> — tell the renderer what to expect:</p>
+
+  <div id="hex-header"></div>
+
+  <table class="fields" id="offset-table-fields"></table>
+
+  <div class="note"><strong>The <span class="mono">sfnt</span> tag</strong> distinguishes flavours. <span class="mono">0x00010000</span> means TrueType outlines (this file). <span class="mono">'OTTO'</span> means Compact Font Format (CFF / CFF2) outlines — also valid OpenType, but with a different glyph payload. We'll only follow the TrueType path.</p>
+  </div>
+</section>
+
+<!-- ===================== STEP 2: Table directory ===================== -->
+
+<hr class="rule" />
+<section id="step-directory">
+  <span class="section-num">Step 2 &middot; The table directory</span>
+  <h2>An index of tables</h2>
+  <p>Immediately after those 12 bytes comes the <span class="kw">table directory</span>: <code id="num-tables-inline">N</code> records of 16 bytes each. Every record names one table — by a four-character ASCII tag like <span class="tag">cmap</span> or <span class="tag">glyf</span> — and gives its absolute offset and length in the file.</p>
+
+  <p>This is the only index in the file. To find any table later, we'll come back here.</p>
+
+  <ul class="dir-list" id="dir-list"></ul>
+  <p class="figure-caption">Tables marked in <span style="color:var(--accent)">red</span> are the ones we need to render a glyph from a character. The rest — kerning, signatures, OS-specific metrics — are out of scope.</p>
+
+  <h3>The bytes for one record</h3>
+  <p>Each record is 4 bytes of tag, 4 bytes of checksum, 4 bytes of offset, 4 bytes of length:</p>
+  <div id="hex-one-record"></div>
+  <table class="fields" id="record-fields"></table>
+</section>
+
+<!-- ===================== STEP 3: maxp ===================== -->
+
+<hr class="rule" />
+<section id="step-maxp">
+  <span class="section-num">Step 3 &middot; <span class="tag">maxp</span> &middot; the glyph count</span>
+  <h2>How many glyphs does the font have?</h2>
+  <p>The simplest table answers the most basic question. <span class="tag">maxp</span> ("maximum profile") begins with a version number followed by a single <code>uint16</code>: the number of glyphs.</p>
+  <p>Every other table that lists per-glyph data — outlines, advance widths, locations — has exactly this many entries. (Or, in the case of <span class="tag">hmtx</span>, fewer, with a special rule we'll see in a minute.)</p>
+
+  <div id="hex-maxp"></div>
+  <table class="fields" id="maxp-fields"></table>
+  <p class="figure-caption">The version <span class="mono">0x00010000</span> means this is the longer "TrueType" maxp — it contains additional limits like the deepest hint stack the renderer needs to allocate. For our purposes, only <code>numGlyphs</code> matters.</p>
+</section>
+
+<!-- ===================== STEP 4: head ===================== -->
+
+<hr class="rule" />
+<section id="step-head">
+  <span class="section-num">Step 4 &middot; <span class="tag">head</span> &middot; the design grid</span>
+  <h2>The coordinate system the font lives in</h2>
+  <p>Glyphs are not stored in pixels. They are stored as integer coordinates on an abstract grid, the <span class="kw">em square</span>, sized by the <code>unitsPerEm</code> field. To draw a glyph at a given size, you scale by <code>pixelsPerEm / unitsPerEm</code>.</p>
+  <p>The <span class="tag">head</span> table also tells us the format of the <span class="tag">loca</span> table we'll need later — short or long — and the bounding box that contains every glyph in the font.</p>
+
+  <div id="hex-head"></div>
+  <table class="fields" id="head-fields"></table>
+
+  <h3>The font bounding box</h3>
+  <p>Every glyph fits inside this rectangle:</p>
+  <div class="bbox-display" id="bbox-display"></div>
+</section>
+
+<!-- ===================== STEP 5: hhea + hmtx ===================== -->
+
+<hr class="rule" />
+<section id="step-hmtx">
+  <span class="section-num">Step 5 &middot; <span class="tag">hhea</span> + <span class="tag">hmtx</span> &middot; horizontal metrics</span>
+  <h2>How wide is each glyph, and where does the line sit?</h2>
+  <p>For horizontal scripts, <span class="tag">hhea</span> sets the page-level metrics — ascent, descent, line gap — and tells us how big the per-glyph metrics array <span class="tag">hmtx</span> is.</p>
+
+  <div id="hex-hhea"></div>
+  <table class="fields" id="hhea-fields"></table>
+
+  <p>Then <span class="tag">hmtx</span> stores one (advanceWidth, leftSideBearing) pair per glyph &mdash; almost. As a space optimisation, only the first <code>numberOfHMetrics</code> glyphs get a pair; the remaining glyphs share the last advance width, with their own leftSideBearings packed into a tail array.</p>
+
+  <p>Below: the first few entries. Pairs are 4 bytes each (<code>uint16</code> advance, <code>int16</code> lsb).</p>
+  <div id="hex-hmtx"></div>
+  <table class="fields" id="hmtx-fields"></table>
+</section>
+
+<!-- ===================== STEP 6: cmap ===================== -->
+
+<hr class="rule" />
+<section id="step-cmap">
+  <span class="section-num">Step 6 &middot; <span class="tag">cmap</span> &middot; characters become glyphs</span>
+  <h2>Mapping a Unicode character to a glyph index</h2>
+  <p>None of the tables we've seen so far know about characters. They all index by <span class="kw">glyph index</span>: a number from 0 to <code>numGlyphs &minus; 1</code>. The job of <span class="tag">cmap</span> is to translate Unicode codepoints into those numbers.</p>
+
+  <p>A font carries multiple <span class="kw">subtables</span>, one per platform/encoding pair. We'll pick the Unicode <em>format 4</em> subtable — the one used for the Basic Multilingual Plane on every modern system.</p>
+
+  <h3>Subtables on offer</h3>
+  <table class="fields" id="cmap-subtables"></table>
+
+  <h3>Format 4: segment mapping to delta values</h3>
+  <p>Format 4 is a clever data structure for sparse maps. The codepoint space is partitioned into <span class="kw">segments</span> of contiguous codepoints. For each segment we store a <code>startCode</code>, <code>endCode</code>, an <code>idDelta</code> and an <code>idRangeOffset</code>. Lookup is a binary search for the segment containing the codepoint, followed by either a simple addition (when <code>idRangeOffset</code> is zero) or an indirection through a glyphIdArray.</p>
+
+  <div class="cmap-demo">
+    <div class="row1">
+      <div>
+        <div class="label" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-faint);margin-bottom:0.3rem">Type a character</div>
+        <input class="char-input" id="cmap-input" value="A" maxlength="2" />
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="result">
+        <span class="label">Codepoint</span>
+        <span class="value" id="cmap-codepoint">U+0041</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="result">
+        <span class="label">Segment</span>
+        <span class="value" id="cmap-segment">&hellip;</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="result">
+        <span class="label">Glyph index</span>
+        <span class="value" id="cmap-gid">&hellip;</span>
+      </div>
+    </div>
+    <div class="seg-trace" id="cmap-trace"></div>
+  </div>
+
+  <h3>The segment array</h3>
+  <p>Below is every segment in the format-4 subtable. The row containing your character is highlighted.</p>
+  <div style="max-height: 300px; overflow:auto; border: 1px solid var(--rule-soft); border-radius: 3px;">
+    <table class="seg-table" id="seg-table"></table>
+  </div>
+</section>
+
+<!-- ===================== STEP 7: loca + glyf ===================== -->
+
+<hr class="rule" />
+<section id="step-glyf">
+  <span class="section-num">Step 7 &middot; <span class="tag">loca</span> + <span class="tag">glyf</span> &middot; outlines</span>
+  <h2>Drawing the glyph</h2>
+  <p>We finally arrive at the shapes. <span class="tag">loca</span> ("locations") is just an array of offsets, one per glyph plus a sentinel at the end — so the bytes for glyph <code>n</code> are <code>glyf[loca[n] &hellip; loca[n+1])</code>. The format of those offsets is determined by the <code>indexToLocFormat</code> field we read earlier.</p>
+
+  <p>Each glyph record begins with a header:</p>
+  <ul style="font-family: var(--mono); font-size: 0.92rem; line-height: 1.6; color: var(--ink-soft);">
+    <li><code>int16 numberOfContours</code> &mdash; positive for a simple glyph, &minus;1 for a composite</li>
+    <li><code>int16 xMin, yMin, xMax, yMax</code> &mdash; the glyph's bounding box</li>
+  </ul>
+  <p>For a simple glyph the rest is: end-points-of-contours, instructions, then run-length-encoded flags, then x and y deltas. The flags are where the magic is — <strong>bit 0 says whether each point is on the curve or off</strong>. Quadratic Bézier control points are off-curve. When two off-curve points sit next to each other the renderer is required to <em>imagine</em> an on-curve point exactly between them.</p>
+
+  <div class="glyph-controls">
+    <span class="opt">Glyph index <input type="number" id="gid-input" min="0" value="" /></span>
+    <span class="opt">or character <input type="text" id="char-input-glyph" maxlength="2" value="g" class="wide" style="width: 6ch" /></span>
+    <span class="nav">
+      <button id="gid-prev">&larr;</button>
+      <button id="gid-next">&rarr;</button>
+    </span>
+    <span class="opt"><label><input type="checkbox" id="opt-points" checked /> Show points</label></span>
+    <span class="opt"><label><input type="checkbox" id="opt-implicit" checked /> Show implicit on-curve</label></span>
+    <span class="opt"><label><input type="checkbox" id="opt-metrics" checked /> Show metrics</label></span>
+    <span class="opt"><label><input type="checkbox" id="opt-numbers" /> Number points</label></span>
+  </div>
+
+  <div class="glyph-explorer">
+    <div class="glyph-canvas-wrap">
+      <div id="glyph-svg"></div>
+    </div>
+    <div class="glyph-side" id="glyph-side"></div>
+  </div>
+
+  <h3>The bytes for this glyph</h3>
+  <div id="hex-glyph"></div>
+
+  <h3>A few more glyphs</h3>
+  <p>Click any glyph to inspect it.</p>
+  <div class="glyph-mini-grid" id="glyph-mini"></div>
+</section>
+
+<!-- ===================== Putting it together ===================== -->
+
+<hr class="rule" />
+<section id="step-end">
+  <span class="section-num">Putting it together</span>
+  <h2>From a character to a shape</h2>
+  <p>To render the letter you typed:</p>
+  <ol style="max-width: 60ch; color: var(--ink-soft); line-height: 1.7;">
+    <li>Read the <span class="tag">cmap</span> subtable, find the segment containing the codepoint, follow the formula to get a <span class="kw">glyph index</span>.</li>
+    <li>Read the <code>indexToLocFormat</code> from <span class="tag">head</span>.</li>
+    <li>Use that to read <code>loca[i]</code> and <code>loca[i+1]</code> &mdash; the start and end offsets into <span class="tag">glyf</span>.</li>
+    <li>Parse the glyph header, then flags, then x and y deltas. Build the contours.</li>
+    <li>Read the <code>advanceWidth</code> and <code>leftSideBearing</code> for that glyph from <span class="tag">hmtx</span>.</li>
+    <li>Read <code>ascender</code>, <code>descender</code>, <code>lineGap</code> from <span class="tag">hhea</span> for line layout.</li>
+    <li>Scale everything by <code>pixelsPerEm / unitsPerEm</code> from <span class="tag">head</span>.</li>
+    <li>Draw the contours, treating off-curve pairs as quadratic Béziers with implicit on-curve midpoints.</li>
+  </ol>
+  <p>That's the whole rendering pipeline for a TrueType-flavored OpenType font, minus hinting (which fine-tunes pixel positions at small sizes), <span class="tag">kern</span>/<span class="tag">GPOS</span> (which adjusts spacing between glyph pairs), <span class="tag">GSUB</span> (which substitutes ligatures and contextual forms), and the variable font axes — each large enough for its own page.</p>
+</section>
+
+<footer>
+  <div>
+    Sources: the <a href="https://learn.microsoft.com/en-us/typography/opentype/spec/">Microsoft OpenType specification</a>,
+    Apple's <a href="https://developer.apple.com/fonts/TrueType-Reference-Manual/">TrueType Reference Manual</a>.
+  </div>
+  <div class="faint">Set in Space Grotesk &amp; JetBrains Mono.</div>
+</footer>
+
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

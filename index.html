@@ -266,6 +266,78 @@
       font-size: 1rem;
     }
 
+    /* Project list */
+    .project-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
+
+    .project-card {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--space-lg);
+      align-items: baseline;
+      padding: var(--space-lg);
+      background: var(--bg-alt);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: inherit;
+      text-decoration: none;
+      transition: transform 0.2s cubic-bezier(.16,1,.3,1),
+                  border-color 0.2s ease,
+                  background 0.2s ease;
+    }
+
+    .project-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .project-card .pc-title {
+      font-family: var(--font-heading);
+      font-weight: 400;
+      font-size: clamp(1.4rem, 2.6vw, 1.85rem);
+      letter-spacing: -0.01em;
+      color: var(--text);
+      margin-bottom: 6px;
+      line-height: 1.2;
+      font-variation-settings: "opsz" 144;
+    }
+
+    .project-card .pc-title em {
+      font-style: italic;
+      color: var(--accent);
+      font-variation-settings: "opsz" 144;
+    }
+
+    .project-card .pc-subtitle {
+      font-size: 0.98rem;
+      color: var(--text-muted);
+      max-width: 60ch;
+      line-height: 1.55;
+    }
+
+    .project-card .pc-cta {
+      color: var(--accent);
+      font-size: 0.78rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      font-weight: 600;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .project-card:hover .pc-cta { color: var(--accent-hover); }
+    .project-card .pc-cta .arr { transition: transform 0.2s ease; display: inline-block; }
+    .project-card:hover .pc-cta .arr { transform: translateX(4px); }
+
+    @media (max-width: 640px) {
+      .project-card { grid-template-columns: 1fr; gap: var(--space-sm); }
+    }
+
     /* Footer */
     footer {
       padding: var(--space-xl) 0;
@@ -330,13 +402,17 @@
     <div class="container">
       <div class="section-header reveal">
         <h2>Projects</h2>
-        <span class="count">— 00 / Active</span>
+        <span class="count">— 01 / Active</span>
       </div>
 
-      <div class="empty-state reveal">
-        <div class="pulse">In progress</div>
-        <h3>Coming soon</h3>
-        <p>The first experiments are underway. Findings will be published here as they reach a shareable state.</p>
+      <div class="project-list">
+        <a class="project-card reveal" href="font-format-explorer/">
+          <div>
+            <div class="pc-title">Inside an <em>OpenType</em> font</div>
+            <div class="pc-subtitle">An explorable explanation that parses a TrueType font byte-by-byte — table directory, cmap, glyf — with a custom hex viewer and a live glyph outline you can poke at.</div>
+          </div>
+          <span class="pc-cta">View experiment <span class="arr">→</span></span>
+        </a>
       </div>
     </div>
   </section>
